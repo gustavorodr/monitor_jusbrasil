@@ -1,0 +1,17 @@
+# Ambiente virtual / cache Python
+.venv/
+__pycache__/
+*.pyc
+
+# Dados pessoais e de execucao (contem CPF/URL pessoal, historico, etc.)
+config.json
+state/
+logs/
+snapshots/
+
+# Diversos
+.DS_Store
+*.log
+
+# Configuracao local do Claude Code
+.claude/

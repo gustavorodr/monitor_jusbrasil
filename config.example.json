@@ -1,0 +1,16 @@
+{
+  "url": "https://www.jusbrasil.com.br/nome/SEU-NOME/cpf-XXXXXXXXXXX",
+  "sentinela_limpo": "nenhum processo com o cpf identificado",
+  "sentinelas_alternativas": [
+    "nao encontramos processos",
+    "nenhum processo encontrado",
+    "nao ha processos vinculados",
+    "nenhum resultado encontrado para o cpf"
+  ],
+  "cnj_regex": "\\d{7}-\\d{2}\\.\\d{4}\\.\\d\\.\\d{2}\\.\\d{4}",
+  "inconclusivo_limite_alerta": 3,
+  "sinal_de_vida_dias": 7,
+  "snapshots_manter": 10,
+  "navegacao_timeout_ms": 45000,
+  "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+}
