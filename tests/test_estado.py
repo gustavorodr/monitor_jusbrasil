@@ -77,13 +77,16 @@ monitor.processar(monitor.PROCESSOS, d_proc(["0801234-56.2023.8.26.0100"]), conf
 checa(not any(k == "alerta" for k, _ in CHAMADAS),
       "CNJ em 'ignorados' (homonimo) nunca alerta")
 
-# 5) Sinal de vida sai na 1a run LIMPA e nao repete no mesmo dia.
+# 5) LIMPO nunca notifica (nem 1a vez, nem apos PROCESSOS) — so alerta
+# quando ha processo encontrado.
 st = estado_zerado()
 CHAMADAS.clear()
 monitor.processar(monitor.LIMPO, {"cnjs": [], "motivo": "limpo", "challenge": None}, config, st)
+checa(not CHAMADAS, "LIMPO nunca notifica (nem sinal de vida)")
+monitor.processar(monitor.PROCESSOS, d_proc(["0801234-56.2023.8.26.0100"]), config, st)
+CHAMADAS.clear()
 monitor.processar(monitor.LIMPO, {"cnjs": [], "motivo": "limpo", "challenge": None}, config, st)
-checa(sum(1 for k, _ in CHAMADAS if k == "vida") == 1,
-      "sinal de vida sai 1x e nao repete dentro da janela")
+checa(not CHAMADAS, "transicao PROCESSOS -> LIMPO tambem nao notifica")
 
 print()
 print("RESULTADO:", "TODOS OS TESTES PASSARAM" if not falhas else f"{falhas} FALHA(S)")

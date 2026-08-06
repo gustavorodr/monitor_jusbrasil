@@ -138,23 +138,41 @@ projeto de não entrar em arms race anti-bot), o fluxo é **semi-automático**:
 
 Isso abre, uma de cada vez, um navegador **visível** para cada fonte
 `manual_captcha` (`tjsp_esaj`, depois `trf3_pje`). Você:
-1. Preenche o CPF no formulário de busca e resolve o captcha.
-2. Aperta o botão de busca no navegador.
-3. Volta ao terminal e aperta **Enter** quando o resultado estiver na tela.
+1. Preenche o CPF no formulário de busca e resolve o captcha, no seu tempo
+   (o script **não fica travando o terminal esperando Enter** — ele fica
+   observando a página em background até aparecer um CNJ ou a frase de
+   "nenhum processo", ou até o tempo limite estourar).
+2. Aperta o botão de busca no navegador quando puder.
 
-O script então lê o HTML, classifica (mesma lógica de 3 estados, mesmos
-`processar()`/anti-spam/sinal-de-vida), salva snapshot em
-`snapshots/tjsp_esaj/` ou `snapshots/trf3_pje/`, e atualiza o estado dessa
-fonte em `state/estado.json`.
+Isso permite deixar rodando (ex.: `--checar-tribunais` disparado às 12h,
+logo depois do JusBrasil, enquanto você almoça) e resolver o captcha quando
+voltar. Cada fonte tem seu próprio limite de espera
+(`manual_timeout_min` em `config.json`, hoje 15min pro TJ-SP e 30min pro
+TRF-3, que costuma ser mais lento) — se estourar sem resultado, a fonte é
+**pulada silenciosamente** (sem notificação) e o script segue pra próxima.
+Se o terminal estiver aberto e interativo, dá pra digitar `p` + Enter a
+qualquer momento pra pular na hora, sem esperar o timeout.
 
-**Lembrete automático:** como esse passo é manual, a run automática do
-JusBrasil (systemd timer) também verifica há quantos dias cada fonte manual
-não é checada; se passar de `tribunais_lembrete_dias` (padrão 14) sem
-checagem, dispara uma notificação de manutenção pedindo para rodar
-`--checar-tribunais`.
+O script então lê o HTML, classifica (mesma lógica de 3 estados) e só
+notifica se achar processo — mesmo comportamento do JusBrasil (veja
+"Notificações" abaixo). Salva snapshot em `snapshots/tjsp_esaj/` ou
+`snapshots/trf3_pje/`, e atualiza o estado dessa fonte em `state/estado.json`.
+
+## Notificações: só quando há processo encontrado
+
+O monitor **não** notifica quando está tudo limpo, nem manda lembrete pra
+você ir olhar o navegador (ele já abre sozinho) — isso vale para todas as
+fontes. A única exceção é o alerta de **manutenção** quando uma fonte fica
+`INCONCLUSIVO` repetidamente (captcha travou, layout mudou, timeout de
+rede): esse alerta continua ativo de propósito, porque é o mecanismo que
+evita o monitor falhar em silêncio sem você saber que parou de funcionar
+— ver seção "Os TRÊS estados" acima.
 
 ## Agendamento (systemd user timer)
 
+Dois timers independentes, ambos em `~/.config/systemd/user/` (fora deste repo):
+
+**`monitor-jusbrasil.timer`** — fonte `auto`, headless, rápida:
 ```bash
 systemctl --user list-timers monitor-jusbrasil.timer   # ver próximos disparos
 systemctl --user start monitor-jusbrasil.service       # rodar agora, manualmente
@@ -162,7 +180,22 @@ systemctl --user start monitor-jusbrasil.service       # rodar agora, manualment
 - Roda **ao ligar a máquina** (`OnStartupSec=2min`) e todo dia às **12h** e **18h**.
 - `Persistent=true`: se a máquina estava desligada no horário, roda ao voltar.
 - `RandomizedDelaySec=300`: folga de até 5 min para não bater no segundo exato.
-- `loginctl enable-linger` já foi habilitado (o gerenciador --user sobe no boot).
+
+**`monitor-tribunais.timer`** — fontes `manual_captcha` (`--checar-tribunais`):
+```bash
+systemctl --user list-timers monitor-tribunais.timer
+systemctl --user start monitor-tribunais.service       # rodar agora, manualmente
+```
+- Roda **1x por dia às 12h15** — 15min depois do JusBrasil, dando tempo dele
+  terminar (é headless e rápido) antes de abrir o navegador visível.
+- Abre o navegador e fica esperando (até `manual_timeout_min` por fonte) —
+  dá pra deixar rodando e resolver o captcha quando puder (ex.: no almoço).
+  Se estourar o tempo sem resultado, pula essa fonte sem notificar e segue
+  pra próxima.
+- `RandomizedDelaySec=120`, `Persistent=true` (mesma lógica do outro timer).
+
+`loginctl enable-linger` já foi habilitado (o gerenciador --user sobe no boot),
+válido pros dois timers.
 
 > **Nota honesta sobre notificações no boot:** o gatilho de boot só mostra popup
 > se houver sessão gráfica ativa (você logado). Sem login, a run acontece e é
@@ -179,9 +212,11 @@ systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DBUS_SESS
 ## Desligar
 
 ```bash
-systemctl --user disable --now monitor-jusbrasil.timer   # para e desabilita
+systemctl --user disable --now monitor-jusbrasil.timer    # para e desabilita
+systemctl --user disable --now monitor-tribunais.timer    # idem, pro TJ-SP/TRF-3
 # opcional, remover de vez:
 rm ~/.config/systemd/user/monitor-jusbrasil.{service,timer}
+rm ~/.config/systemd/user/monitor-tribunais.{service,timer}
 systemctl --user daemon-reload
 loginctl disable-linger $USER    # se não usar mais nenhum serviço --user no boot
 ```
@@ -211,13 +246,13 @@ loginctl disable-linger $USER    # se não usar mais nenhum serviço --user no b
 Chaves compartilhadas (topo do arquivo):
 - `cnj_regex`: regex do número CNJ (Resolução 65), igual para todas as fontes.
 - `inconclusivo_limite_alerta` (3): quantos INCONCLUSIVOs seguidos até alertar manutenção.
-- `sinal_de_vida_dias` (7): a cada quantos dias mandar o "monitor ativo" (por fonte).
-- `tribunais_lembrete_dias` (14): a cada quantos dias lembrar de rodar `--checar-tribunais`.
 - `snapshots_manter` (10): quantos snapshots reter por fonte.
 - `navegacao_timeout_ms` (45000): timeout de navegação do Playwright.
 
 Lista `fontes`, cada item com `id`/`nome`/`tipo` (`"auto"` ou `"manual_captcha"`)
 e sua própria `url`/`url_busca` + `sentinela_limpo`/`sentinelas_alternativas`.
+Fontes `manual_captcha` também têm `manual_timeout_min` — quanto tempo
+`--checar-tribunais` espera por um resultado nessa fonte antes de pular.
 Ver `config.example.json` para o formato completo.
 
 ---

@@ -4,7 +4,6 @@
   "sinal_de_vida_dias": 7,
   "snapshots_manter": 10,
   "navegacao_timeout_ms": 45000,
-  "tribunais_lembrete_dias": 14,
   "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
   "fontes": [
     {
@@ -25,6 +24,7 @@
       "nome": "TJ-SP e-SAJ (1º grau, consulta por CPF)",
       "tipo": "manual_captcha",
       "url_busca": "https://esaj.tjsp.jus.br/cpopg/open.do",
+      "manual_timeout_min": 15,
       "sentinela_limpo": "nao foi encontrado nenhum processo",
       "sentinelas_alternativas": [
         "nao foi encontrado nenhum processo para os parametros informados"
@@ -35,6 +35,7 @@
       "nome": "TRF-3 PJe (1º grau, consulta pública)",
       "tipo": "manual_captcha",
       "url_busca": "https://pje1g.trf3.jus.br/pje/ConsultaPublica/listView.seam",
+      "manual_timeout_min": 30,
       "sentinela_limpo": "nenhum processo encontrado",
       "sentinelas_alternativas": [
         "nenhum processo encontrado com os parametros informados"

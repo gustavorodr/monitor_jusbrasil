@@ -463,21 +463,52 @@ def buscar_html(config):
 
 # --------------------------------------------------------------------------
 # fonte semi-automatica (e-SAJ/PJe): reCAPTCHA em toda consulta impede
-# headless silencioso. Abrimos navegador VISIVEL, o usuario resolve o
-# captcha e busca manualmente; o script so retoma para ler/classificar.
+# headless silencioso. Abrimos navegador VISIVEL e ficamos observando o
+# conteudo da pagina ate aparecer um resultado (CNJ ou sentinela) ou o tempo
+# limite estourar — sem bloquear esperando Enter, pra dar pra rodar sozinho
+# via systemd enquanto o usuario resolve o captcha noutra hora (ex.: almoco).
+# Se um terminal estiver disponivel, digitar 'p' + Enter pula na hora.
 # --------------------------------------------------------------------------
+def _aguardar_resultado_manual(page, cfg_fonte, timeout_min):
+    """Poll ate achar CNJ/sentinela na pagina, ou o tempo limite estourar.
+    Retorna (html, pulado). pulado=True tanto por timeout quanto por 'p'."""
+    import select
+
+    limite_seg = timeout_min * 60
+    intervalo_seg = 2
+    decorrido = 0
+    sentinelas = [cfg_fonte["sentinela_limpo"]] + cfg_fonte.get("sentinelas_alternativas", [])
+
+    while decorrido < limite_seg:
+        html = page.content()
+        tem_cnj = re.search(cfg_fonte["cnj_regex"], html)
+        n_texto = normalizar(strip_tags(html))
+        tem_sentinela = any(normalizar(s) in n_texto for s in sentinelas)
+        if tem_cnj or tem_sentinela:
+            return html, False
+
+        if sys.stdin.isatty():
+            pronto, _, _ = select.select([sys.stdin], [], [], intervalo_seg)
+            if pronto and sys.stdin.readline().strip().lower() in ("p", "pular"):
+                return page.content(), True
+        else:
+            page.wait_for_timeout(intervalo_seg * 1000)
+        decorrido += intervalo_seg
+
+    return page.content(), True
+
+
 def checar_fonte_manual(fonte, config, st):
     from playwright.sync_api import sync_playwright
 
     cfg_fonte = config_da_fonte(config, fonte)
+    timeout_min = fonte.get("manual_timeout_min", 20)
     print(f"\n=== {fonte['nome']} ===")
     print(f"Abrindo navegador em: {fonte['url_busca']}")
-    notificar_manutencao(
-        f"Checagem manual: {fonte['nome']}",
-        "Abri um navegador. Preencha o CPF, resolva o captcha, busque, e "
-        "volte ao terminal quando o resultado estiver na tela.")
+    print(f"Preencha o CPF, resolva o captcha e busque. Aguardando ate "
+          f"{timeout_min} min pelo resultado "
+          "(terminal interativo: digite 'p' + Enter a qualquer momento pra pular).")
 
-    html = None
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
         try:
@@ -488,11 +519,14 @@ def checar_fonte_manual(fonte, config, st):
             page = ctx.new_page()
             page.goto(fonte["url_busca"], wait_until="domcontentloaded",
                        timeout=config["navegacao_timeout_ms"])
-            input(f"[{fonte['nome']}] Pressione Enter aqui quando o resultado "
-                  "da busca estiver na tela do navegador... ")
-            html = page.content()
+            html, pulado = _aguardar_resultado_manual(page, cfg_fonte, timeout_min)
         finally:
             browser.close()
+
+    if pulado:
+        log(f"Checagem manual {fonte['id']} pulada (sem resultado em {timeout_min} min).")
+        print(f"[{fonte['nome']}] pulado.")
+        return None
 
     estado, dados = classificar(html, cfg_fonte)
     snap = salvar_snapshot(html, estado, config, subpasta=fonte["id"])
@@ -557,11 +591,8 @@ def processar(estado_novo, dados, config, st):
         st["inconclusivos_consecutivos"] = 0
         st["ultima_checagem_ok"] = agora_iso
         if anterior == PROCESSOS:
-            notificar_manutencao(
-                "Perfil voltou a ficar limpo",
-                "Nao ha mais numeros CNJ na pagina; a sentinela de "
-                '"nenhum processo" reapareceu.')
-            log("TRANSICAO PROCESSOS -> LIMPO notificada.")
+            log("TRANSICAO PROCESSOS -> LIMPO. Sem notificacao "
+                "(so alerta quando ha processo encontrado).")
         else:
             log("LIMPO. Silencio (comportamento esperado).")
 
@@ -581,18 +612,6 @@ def processar(estado_novo, dados, config, st):
 
     st["ultimo_estado"] = estado_novo
     st["ultimo_timestamp"] = agora_iso
-
-    # sinal de vida semanal, so quando NAO ha nada errado (LIMPO)
-    if estado_novo == LIMPO:
-        d = dias_desde(st.get("ultimo_sinal_de_vida"))
-        if d is None or d >= config.get("sinal_de_vida_dias", 7):
-            ok = st.get("ultima_checagem_ok") or agora_iso
-            notificar_vida(
-                "Monitor JusBrasil ativo",
-                f"Nenhum processo vinculado. Ultima checagem OK: {ok[:16]}.")
-            st["ultimo_sinal_de_vida"] = agora_iso
-            log("Sinal de vida semanal enviado.")
-
     return st
 
 
@@ -618,25 +637,6 @@ def montar_corpo_alerta(cnjs):
 # --------------------------------------------------------------------------
 # comandos CLI
 # --------------------------------------------------------------------------
-def lembrar_tribunais(config, st):
-    """Nudge periodico: sem isso, o passo manual (e-SAJ/PJe) tende a nunca
-    acontecer. Roda dentro do cmd_run automatico (systemd timer)."""
-    dias_limite = config.get("tribunais_lembrete_dias", 14)
-    manuais = [f for f in config["fontes"] if f.get("tipo") == "manual_captcha"]
-    pendentes = []
-    for f in manuais:
-        est_f = st["fontes"].get(f["id"], {})
-        d = dias_desde(est_f.get("ultima_checagem_manual"))
-        if d is None or d >= dias_limite:
-            pendentes.append(f["nome"])
-    if pendentes:
-        notificar_manutencao(
-            "Falta checar tribunais manualmente",
-            f"Ja fazem >= {dias_limite} dias (ou nunca) sem checar: "
-            + "; ".join(pendentes) + ".\nRode: python monitor.py --checar-tribunais")
-        log("Lembrete de checagem manual disparado para: " + ", ".join(pendentes))
-
-
 def cmd_run(config):
     st = carregar_estado()
     fonte = obter_fonte(config, "jusbrasil")
@@ -658,8 +658,6 @@ def cmd_run(config):
     trabalho = st_trabalho(st, "jusbrasil")
     trabalho = processar(estado, dados, cfg_fonte, trabalho)
     salvar_st_trabalho(st, "jusbrasil", trabalho)
-
-    lembrar_tribunais(config, st)
 
     salvar_estado(st)
     print(f"Estado: {estado} — {dados['motivo']}")
