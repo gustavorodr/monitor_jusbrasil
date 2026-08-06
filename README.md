@@ -1,12 +1,23 @@
-# Monitor JusBrasil — processos por CPF
+# Monitor de processos por CPF
 
-Vigia uma página pública de perfil no JusBrasil e **avisa por notificação de
-sistema** se aparecer processo judicial (número CNJ) vinculado ao perfil.
-Roda ao ligar a máquina e todo dia ao meio-dia e às 18h, via **systemd user
-timer** (não cron — cron não tem `DISPLAY`/DBUS e as notificações não
-apareceriam na tela).
+Vigia fontes públicas e **avisa por notificação de sistema** se aparecer
+processo judicial (número CNJ) vinculado ao CPF.
 
-URL monitorada: definida em `config.json` (veja `config.example.json` para o formato).
+Duas categorias de fonte, configuradas em `config.json` → `fontes`:
+
+- **`jusbrasil`** (`tipo: "auto"`): página pública de perfil no JusBrasil.
+  100% automática, headless, roda ao ligar a máquina e todo dia ao meio-dia e
+  às 18h via **systemd user timer** (não cron — cron não tem `DISPLAY`/DBUS
+  e as notificações não apareceriam na tela).
+- **`tjsp_esaj`** e **`trf3_pje`** (`tipo: "manual_captcha"`): consulta por
+  CPF no e-SAJ (TJ-SP) e no PJe (TRF-3) — fontes autoritativas, mas exigem
+  **reCAPTCHA em toda consulta**, então rodam **semi-automáticas**: o script
+  abre um navegador visível, você resolve o captcha e busca manualmente, e
+  o script retoma para ler e classificar o resultado
+  (`python monitor.py --checar-tribunais`, veja seção própria abaixo).
+
+URL/fontes monitoradas: definidas em `config.json` (veja `config.example.json`
+para o formato).
 
 ---
 
@@ -69,10 +80,12 @@ cd ~/monitor_jusbrasil
 # 2) Testes da máquina de estados / anti-spam (sem rede, sem notificar de verdade)
 ./.venv/bin/python tests/test_estado.py
 
-# 3) Classificar um HTML avulso de disco
+# 3) Classificar um HTML avulso de disco (fonte default: jusbrasil)
 ./.venv/bin/python monitor.py --testar-fixture fixtures/com_processo.html
+./.venv/bin/python monitor.py --testar-fixture fixtures/tjsp_com_processo.html --fonte tjsp_esaj
+./.venv/bin/python monitor.py --testar-fixture fixtures/trf3_limpo.html --fonte trf3_pje
 
-# 4) Rodar de verdade contra a URL (usa Playwright/Chromium)
+# 4) Rodar de verdade contra a URL do JusBrasil (usa Playwright/Chromium, headless)
 ./.venv/bin/python monitor.py
 
 # 5) Disparar as notificações de teste (aparecem na tela)
@@ -108,6 +121,37 @@ O JusBrasil mistura pessoas de mesmo nome. Se um processo alertado **não é seu
 O CNJ vai para a lista `ignorados` em `state/estado.json` e nunca mais gera
 alerta. As notificações **nunca afirmam que o processo é seu** — sempre pedem
 para conferir se não é homônimo, mostrando as partes/contexto que der para extrair.
+`ignorados`/`cnjs_vistos` são compartilhados entre todas as fontes (um CNJ é
+globalmente único, então ignorar/já ter visto vale para JusBrasil, e-SAJ e PJe).
+
+## Fontes adicionais (TJ-SP / TRF-3) — semi-automático
+
+O e-SAJ (TJ-SP) e o PJe (TRF-3) permitem busca pública por CPF sem login, mas
+exigem **reCAPTCHA em toda consulta** — diferente do JusBrasil, não dá pra
+esperar o desafio resolver sozinho em background. Em vez de integrar um
+serviço pago de resolução de captcha (o que colidiria com a filosofia deste
+projeto de não entrar em arms race anti-bot), o fluxo é **semi-automático**:
+
+```bash
+./.venv/bin/python monitor.py --checar-tribunais
+```
+
+Isso abre, uma de cada vez, um navegador **visível** para cada fonte
+`manual_captcha` (`tjsp_esaj`, depois `trf3_pje`). Você:
+1. Preenche o CPF no formulário de busca e resolve o captcha.
+2. Aperta o botão de busca no navegador.
+3. Volta ao terminal e aperta **Enter** quando o resultado estiver na tela.
+
+O script então lê o HTML, classifica (mesma lógica de 3 estados, mesmos
+`processar()`/anti-spam/sinal-de-vida), salva snapshot em
+`snapshots/tjsp_esaj/` ou `snapshots/trf3_pje/`, e atualiza o estado dessa
+fonte em `state/estado.json`.
+
+**Lembrete automático:** como esse passo é manual, a run automática do
+JusBrasil (systemd timer) também verifica há quantos dias cada fonte manual
+não é checada; se passar de `tribunais_lembrete_dias` (padrão 14) sem
+checagem, dispara uma notificação de manutenção pedindo para rodar
+`--checar-tribunais`.
 
 ## Agendamento (systemd user timer)
 
@@ -150,37 +194,56 @@ loginctl disable-linger $USER    # se não usar mais nenhum serviço --user no b
 ~/monitor_jusbrasil/
 ├── .venv/                 # Playwright + Chromium isolados
 ├── monitor.py             # tudo: fetch, classificação, estados, notificações
-├── config.json            # url, sentinela, regex CNJ, limiares
+├── config.json            # fontes (jusbrasil/tjsp_esaj/trf3_pje), regex CNJ, limiares
 ├── logs/monitor.log       # append, timestamp + estado de cada run
-├── state/estado.json      # último estado, CNJs vistos, ignorados, sinal de vida
-├── snapshots/             # HTML por run (últimos 10, com rotação)
-├── fixtures/              # HTMLs de teste dos 3 estados
+├── state/estado.json      # cnjs_vistos/ignorados (globais) + estado por fonte
+├── snapshots/
+│   ├── jusbrasil/         # HTML por run (últimos 10, com rotação)
+│   ├── tjsp_esaj/
+│   └── trf3_pje/
+├── fixtures/              # HTMLs de teste dos 3 estados, por fonte
 ├── tests/                 # test_classificar.py, test_estado.py
 └── README.md
 ```
 
 ## Configuração (`config.json`)
 
+Chaves compartilhadas (topo do arquivo):
+- `cnj_regex`: regex do número CNJ (Resolução 65), igual para todas as fontes.
 - `inconclusivo_limite_alerta` (3): quantos INCONCLUSIVOs seguidos até alertar manutenção.
-- `sinal_de_vida_dias` (7): a cada quantos dias mandar o "monitor ativo".
-- `snapshots_manter` (10): quantos snapshots reter.
+- `sinal_de_vida_dias` (7): a cada quantos dias mandar o "monitor ativo" (por fonte).
+- `tribunais_lembrete_dias` (14): a cada quantos dias lembrar de rodar `--checar-tribunais`.
+- `snapshots_manter` (10): quantos snapshots reter por fonte.
 - `navegacao_timeout_ms` (45000): timeout de navegação do Playwright.
+
+Lista `fontes`, cada item com `id`/`nome`/`tipo` (`"auto"` ou `"manual_captcha"`)
+e sua própria `url`/`url_busca` + `sentinela_limpo`/`sentinelas_alternativas`.
+Ver `config.example.json` para o formato completo.
 
 ---
 
-## Dois avisos honestos
+## Três avisos honestos
 
 1. **JusBrasil é fonte secundária.** Agrega com atraso e mistura homônimos. Um
-   processo real pode aparecer lá semanas depois — ou nunca. Para garantia, a
-   fonte autoritativa é o portal do tribunal (e-SAJ/PJe do seu TJ, TRT, TRF).
-   Este monitor é uma rede de segurança conveniente, não cobertura completa.
-2. **A parte frágil é o parsing, não o Cloudflare.** O regex de CNJ é estável
-   (Resolução 65 do CNJ) e o contador `totalLawsuits` também. Mas extrair partes
-   e tribunal depende do HTML deles, que muda sem aviso. É para isso que existem
-   o estado INCONCLUSIVO e os snapshots: quando quebrar, você é avisado e tem o
-   HTML para corrigir — em vez de descobrir meses depois.
+   processo real pode aparecer lá semanas depois — ou nunca. Por isso o e-SAJ
+   (TJ-SP) e o PJe (TRF-3) foram adicionados como fontes autoritativas —
+   ainda assim, este monitor é uma rede de segurança conveniente, não
+   cobertura completa (só cobre TJ-SP/TRF-3; uma execução em outro estado ou
+   tribunal não é vigiada).
+2. **A parte frágil é o parsing, não o Cloudflare/captcha.** O regex de CNJ é
+   estável (Resolução 65 do CNJ) e o contador `totalLawsuits` do JusBrasil
+   também. Mas extrair partes/classe/assunto depende do HTML de cada site,
+   que muda sem aviso. É para isso que existem o estado INCONCLUSIVO e os
+   snapshots: quando quebrar, você é avisado e tem o HTML para corrigir — em
+   vez de descobrir meses depois.
+3. **As sentinelas de e-SAJ/PJe em `config.json` são estimativas.** Foram
+   escritas a partir de pesquisa, não de uma captura ao vivo (a busca por CPF
+   nesses portais exige reCAPTCHA, então não dava pra confirmar a frase exata
+   de "nenhum processo encontrado" sem rodar o fluxo manual uma vez). Depois
+   do primeiro `--checar-tribunais` real, confira o snapshot salvo em
+   `snapshots/tjsp_esaj/`/`snapshots/trf3_pje/` contra a `sentinela_limpo`
+   configurada e ajuste se divergir.
 
 Sem arms race anti-bot: Chromium headless normal, user-agent realista, 1
-requisição por vez. Se o Cloudflare endurecer, o monitor prefere avisar que
-ficou **cego** (INCONCLUSIVO) a tentar burlar.
-```
+requisição por vez. Se o Cloudflare/reCAPTCHA endurecer, o monitor prefere
+avisar que ficou **cego** (INCONCLUSIVO) a tentar burlar.

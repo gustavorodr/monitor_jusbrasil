@@ -17,9 +17,16 @@ Filosofia central (leia antes de mexer):
   NUNCA tratamos 403/challenge como "return calado". Silencio so e permitido
   no estado LIMPO, e confirmado por deteccao POSITIVA da sentinela.
 
+Fontes:
+  jusbrasil  -> tipo "auto": headless, roda sozinho via systemd timer.
+  tjsp_esaj, trf3_pje -> tipo "manual_captcha": exigem reCAPTCHA em toda
+    consulta por CPF, entao rodam com navegador VISIVEL e voce resolve o
+    captcha manualmente (--checar-tribunais).
+
 Uso:
-  python monitor.py                      # run normal (rede via Playwright)
-  python monitor.py --testar-fixture X   # classifica um HTML de disco (sem rede)
+  python monitor.py                      # run normal da fonte "auto" (jusbrasil)
+  python monitor.py --checar-tribunais   # abre navegador p/ TJ-SP/TRF-3 (manual)
+  python monitor.py --testar-fixture X --fonte ID  # classifica HTML de disco (sem rede)
   python monitor.py --ignorar CNJ        # marca CNJ como homonimo (nao alerta mais)
   python monitor.py --status             # mostra estado atual
   python monitor.py --notificar-teste alerta|manutencao|vida  # dispara notificacao
@@ -89,19 +96,77 @@ def carregar_config():
         return json.load(f)
 
 
+def obter_fonte(config, fonte_id):
+    for f in config["fontes"]:
+        if f["id"] == fonte_id:
+            return f
+    raise KeyError(f"fonte '{fonte_id}' nao existe em config.json")
+
+
+def config_da_fonte(config, fonte):
+    """Mescla as chaves compartilhadas (cnj_regex etc.) com as da fonte
+    especifica (url/sentinela). classificar()/buscar_html() continuam
+    recebendo um dict 'config' comum, agnostico de quantas fontes existem."""
+    return {**config, **fonte}
+
+
+def estado_fonte_vazio():
+    return {
+        "ultimo_estado": None,
+        "ultimo_timestamp": None,
+        "inconclusivos_consecutivos": 0,
+        "ultimo_sinal_de_vida": None,
+        "ultima_checagem_ok": None,
+        "ultima_checagem_manual": None,
+    }
+
+
+def st_trabalho(st, fonte_id):
+    """Monta o dict 'de trabalho' que processar() espera: estado da fonte +
+    cnjs_vistos/ignorados (compartilhados entre fontes, pois um CNJ e
+    globalmente unico)."""
+    base = dict(st["fontes"].get(fonte_id) or estado_fonte_vazio())
+    base["cnjs_vistos"] = list(st.get("cnjs_vistos", []))
+    base["ignorados"] = list(st.get("ignorados", []))
+    return base
+
+
+def salvar_st_trabalho(st, fonte_id, trabalho):
+    """Devolve o dict 'de trabalho' pos-processar() para dentro de st:
+    cnjs_vistos/ignorados voltam pro topo (compartilhado), o resto vai pra
+    st['fontes'][fonte_id]."""
+    st["cnjs_vistos"] = trabalho.pop("cnjs_vistos")
+    st["ignorados"] = trabalho.pop("ignorados")
+    st["fontes"][fonte_id] = trabalho
+
+
 def carregar_estado():
     if not os.path.exists(STATE_PATH):
-        return {
-            "ultimo_estado": None,
-            "ultimo_timestamp": None,
-            "inconclusivos_consecutivos": 0,
-            "cnjs_vistos": [],
-            "ignorados": [],
-            "ultimo_sinal_de_vida": None,
-            "ultima_checagem_ok": None,
-        }
+        return {"cnjs_vistos": [], "ignorados": [], "fontes": {}}
     with open(STATE_PATH, encoding="utf-8") as f:
-        return json.load(f)
+        st = json.load(f)
+    if "fontes" not in st:
+        # formato antigo (uma unica fonte, JusBrasil) -> migra
+        antigo = st
+        st = {
+            "cnjs_vistos": antigo.get("cnjs_vistos", []),
+            "ignorados": antigo.get("ignorados", []),
+            "fontes": {
+                "jusbrasil": {
+                    "ultimo_estado": antigo.get("ultimo_estado"),
+                    "ultimo_timestamp": antigo.get("ultimo_timestamp"),
+                    "inconclusivos_consecutivos":
+                        antigo.get("inconclusivos_consecutivos", 0),
+                    "ultimo_sinal_de_vida": antigo.get("ultimo_sinal_de_vida"),
+                    "ultima_checagem_ok": antigo.get("ultima_checagem_ok"),
+                    "ultima_checagem_manual": None,
+                }
+            },
+        }
+    st.setdefault("cnjs_vistos", [])
+    st.setdefault("ignorados", [])
+    st.setdefault("fontes", {})
+    return st
 
 
 def salvar_estado(estado):
@@ -334,17 +399,18 @@ def notificar_vida(titulo, corpo):
 # --------------------------------------------------------------------------
 # snapshots
 # --------------------------------------------------------------------------
-def salvar_snapshot(html, estado, config):
-    os.makedirs(SNAP_DIR, exist_ok=True)
+def salvar_snapshot(html, estado, config, subpasta="jusbrasil"):
+    pasta = os.path.join(SNAP_DIR, subpasta)
+    os.makedirs(pasta, exist_ok=True)
     ts = agora().strftime("%Y%m%d-%H%M%S")
     nome = f"{ts}_{estado}.html"
-    caminho = os.path.join(SNAP_DIR, nome)
+    caminho = os.path.join(pasta, nome)
     with open(caminho, "w", encoding="utf-8") as f:
         f.write(html or "")
-    # rotacao: manter os N mais recentes
+    # rotacao: manter os N mais recentes (por fonte, pastas separadas)
     manter = config.get("snapshots_manter", 10)
     arquivos = sorted(
-        [os.path.join(SNAP_DIR, x) for x in os.listdir(SNAP_DIR) if x.endswith(".html")]
+        [os.path.join(pasta, x) for x in os.listdir(pasta) if x.endswith(".html")]
     )
     for velho in arquivos[:-manter]:
         try:
@@ -393,6 +459,53 @@ def buscar_html(config):
             return page.content()
         finally:
             browser.close()
+
+
+# --------------------------------------------------------------------------
+# fonte semi-automatica (e-SAJ/PJe): reCAPTCHA em toda consulta impede
+# headless silencioso. Abrimos navegador VISIVEL, o usuario resolve o
+# captcha e busca manualmente; o script so retoma para ler/classificar.
+# --------------------------------------------------------------------------
+def checar_fonte_manual(fonte, config, st):
+    from playwright.sync_api import sync_playwright
+
+    cfg_fonte = config_da_fonte(config, fonte)
+    print(f"\n=== {fonte['nome']} ===")
+    print(f"Abrindo navegador em: {fonte['url_busca']}")
+    notificar_manutencao(
+        f"Checagem manual: {fonte['nome']}",
+        "Abri um navegador. Preencha o CPF, resolva o captcha, busque, e "
+        "volte ao terminal quando o resultado estiver na tela.")
+
+    html = None
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False)
+        try:
+            ctx = browser.new_context(
+                user_agent=config["user_agent"], locale="pt-BR",
+                viewport={"width": 1366, "height": 768},
+            )
+            page = ctx.new_page()
+            page.goto(fonte["url_busca"], wait_until="domcontentloaded",
+                       timeout=config["navegacao_timeout_ms"])
+            input(f"[{fonte['nome']}] Pressione Enter aqui quando o resultado "
+                  "da busca estiver na tela do navegador... ")
+            html = page.content()
+        finally:
+            browser.close()
+
+    estado, dados = classificar(html, cfg_fonte)
+    snap = salvar_snapshot(html, estado, config, subpasta=fonte["id"])
+    log(f"Checagem manual {fonte['id']} -> {estado} | {dados['motivo']} | "
+        f"snapshot={os.path.basename(snap)}")
+
+    trabalho = st_trabalho(st, fonte["id"])
+    trabalho = processar(estado, dados, cfg_fonte, trabalho)
+    trabalho["ultima_checagem_manual"] = agora().isoformat()
+    salvar_st_trabalho(st, fonte["id"], trabalho)
+
+    print(f"[{fonte['nome']}] Estado: {estado} — {dados['motivo']}")
+    return estado
 
 
 # --------------------------------------------------------------------------
@@ -505,12 +618,33 @@ def montar_corpo_alerta(cnjs):
 # --------------------------------------------------------------------------
 # comandos CLI
 # --------------------------------------------------------------------------
+def lembrar_tribunais(config, st):
+    """Nudge periodico: sem isso, o passo manual (e-SAJ/PJe) tende a nunca
+    acontecer. Roda dentro do cmd_run automatico (systemd timer)."""
+    dias_limite = config.get("tribunais_lembrete_dias", 14)
+    manuais = [f for f in config["fontes"] if f.get("tipo") == "manual_captcha"]
+    pendentes = []
+    for f in manuais:
+        est_f = st["fontes"].get(f["id"], {})
+        d = dias_desde(est_f.get("ultima_checagem_manual"))
+        if d is None or d >= dias_limite:
+            pendentes.append(f["nome"])
+    if pendentes:
+        notificar_manutencao(
+            "Falta checar tribunais manualmente",
+            f"Ja fazem >= {dias_limite} dias (ou nunca) sem checar: "
+            + "; ".join(pendentes) + ".\nRode: python monitor.py --checar-tribunais")
+        log("Lembrete de checagem manual disparado para: " + ", ".join(pendentes))
+
+
 def cmd_run(config):
     st = carregar_estado()
+    fonte = obter_fonte(config, "jusbrasil")
+    cfg_fonte = config_da_fonte(config, fonte)
     html = None
     try:
-        html = buscar_html(config)
-        estado, dados = classificar(html, config)
+        html = buscar_html(cfg_fonte)
+        estado, dados = classificar(html, cfg_fonte)
     except Exception as e:
         # QUALQUER falha de rede/navegacao/timeout -> INCONCLUSIVO, nunca return calado
         estado, dados = INCONCLUSIVO, {
@@ -518,19 +652,39 @@ def cmd_run(config):
             "motivo": f"excecao no fetch: {type(e).__name__}: {e}"}
         log(f"Fetch falhou: {e}")
 
-    snap = salvar_snapshot(html, estado, config)
+    snap = salvar_snapshot(html, estado, config, subpasta="jusbrasil")
     log(f"Run -> {estado} | {dados['motivo']} | snapshot={os.path.basename(snap)}")
-    st = processar(estado, dados, config, st)
+
+    trabalho = st_trabalho(st, "jusbrasil")
+    trabalho = processar(estado, dados, cfg_fonte, trabalho)
+    salvar_st_trabalho(st, "jusbrasil", trabalho)
+
+    lembrar_tribunais(config, st)
+
     salvar_estado(st)
     print(f"Estado: {estado} — {dados['motivo']}")
     return 0
 
 
-def cmd_testar_fixture(caminho, config):
+def cmd_checar_tribunais(config):
+    st = carregar_estado()
+    manuais = [f for f in config["fontes"] if f.get("tipo") == "manual_captcha"]
+    if not manuais:
+        print("Nenhuma fonte manual_captcha configurada.")
+        return 0
+    for fonte in manuais:
+        checar_fonte_manual(fonte, config, st)
+        salvar_estado(st)
+    return 0
+
+
+def cmd_testar_fixture(caminho, config, fonte_id="jusbrasil"):
+    fonte = obter_fonte(config, fonte_id)
+    cfg_fonte = config_da_fonte(config, fonte)
     with open(caminho, encoding="utf-8") as f:
         html = f.read()
-    estado, dados = classificar(html, config)
-    print(f"[{os.path.basename(caminho)}] -> {estado}")
+    estado, dados = classificar(html, cfg_fonte)
+    print(f"[{os.path.basename(caminho)}] ({fonte_id}) -> {estado}")
     print(f"  motivo: {dados['motivo']}")
     if dados["cnjs"]:
         for c in dados["cnjs"]:
@@ -578,11 +732,16 @@ def cmd_notificar_teste(tipo):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Monitor JusBrasil por CPF (3 estados).")
+    ap = argparse.ArgumentParser(description="Monitor de processos por CPF (3 estados).")
     ap.add_argument("--testar-fixture", metavar="HTML")
+    ap.add_argument("--fonte", metavar="ID", default="jusbrasil",
+                     help="fonte a usar com --testar-fixture (default: jusbrasil)")
     ap.add_argument("--ignorar", metavar="CNJ")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--notificar-teste", choices=["alerta", "manutencao", "vida"])
+    ap.add_argument("--checar-tribunais", action="store_true",
+                     help="abre navegador visivel p/ TJ-SP/TRF-3; voce resolve "
+                          "o captcha e busca, o script classifica o resultado")
     args = ap.parse_args()
 
     config = carregar_config()
@@ -591,10 +750,12 @@ def main():
         return cmd_status()
     if args.notificar_teste:
         return cmd_notificar_teste(args.notificar_teste)
+    if args.checar_tribunais:
+        return cmd_checar_tribunais(config)
     if args.ignorar:
         return cmd_ignorar(args.ignorar, config)
     if args.testar_fixture:
-        cmd_testar_fixture(args.testar_fixture, config)
+        cmd_testar_fixture(args.testar_fixture, config, args.fonte)
         return 0
     return cmd_run(config)
 

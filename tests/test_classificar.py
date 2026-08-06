@@ -9,7 +9,8 @@ sys.path.insert(0, BASE)
 import monitor  # noqa: E402
 
 FIX = os.path.join(BASE, "fixtures")
-config = monitor.carregar_config()
+config_geral = monitor.carregar_config()
+config = monitor.config_da_fonte(config_geral, monitor.obter_fonte(config_geral, "jusbrasil"))
 
 CASOS = [
     ("limpo.html", monitor.LIMPO),                # sentinela visivel
@@ -80,6 +81,22 @@ def main():
     falhas += 0 if ok else 1
     print(f"[{'PASS' if ok else 'FALHA'}] {'cnj_vence_sentinela':20s} "
           f"esperado={monitor.PROCESSOS:22s} obtido={estado:22s}")
+
+    # Fontes semi-automaticas (e-SAJ/PJe): fixtures sinteticas best-effort,
+    # cada uma com a sentinela/regex da sua propria fonte via config_da_fonte.
+    CASOS_FONTE = [
+        ("tjsp_esaj", "tjsp_limpo.html", monitor.LIMPO),
+        ("tjsp_esaj", "tjsp_com_processo.html", monitor.PROCESSOS),
+        ("trf3_pje", "trf3_limpo.html", monitor.LIMPO),
+        ("trf3_pje", "trf3_com_processo.html", monitor.PROCESSOS),
+    ]
+    for fonte_id, nome, esperado in CASOS_FONTE:
+        cfg_fonte = monitor.config_da_fonte(config_geral, monitor.obter_fonte(config_geral, fonte_id))
+        estado, dados = monitor.classificar(ler(nome), cfg_fonte)
+        ok = estado == esperado
+        falhas += 0 if ok else 1
+        print(f"[{'PASS' if ok else 'FALHA'}] {fonte_id}/{nome:20s} esperado={esperado:22s} "
+              f"obtido={estado:22s}  ({dados['motivo']})")
 
     print()
     if falhas:

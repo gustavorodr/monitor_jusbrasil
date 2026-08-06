@@ -1,16 +1,44 @@
 {
-  "url": "https://www.jusbrasil.com.br/nome/SEU-NOME/cpf-XXXXXXXXXXX",
-  "sentinela_limpo": "nenhum processo com o cpf identificado",
-  "sentinelas_alternativas": [
-    "nao encontramos processos",
-    "nenhum processo encontrado",
-    "nao ha processos vinculados",
-    "nenhum resultado encontrado para o cpf"
-  ],
   "cnj_regex": "\\d{7}-\\d{2}\\.\\d{4}\\.\\d\\.\\d{2}\\.\\d{4}",
   "inconclusivo_limite_alerta": 3,
   "sinal_de_vida_dias": 7,
   "snapshots_manter": 10,
   "navegacao_timeout_ms": 45000,
-  "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+  "tribunais_lembrete_dias": 14,
+  "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+  "fontes": [
+    {
+      "id": "jusbrasil",
+      "nome": "JusBrasil",
+      "tipo": "auto",
+      "url": "https://www.jusbrasil.com.br/nome/SEU-NOME/cpf-XXXXXXXXXXX",
+      "sentinela_limpo": "nenhum processo com o cpf identificado",
+      "sentinelas_alternativas": [
+        "nao encontramos processos",
+        "nenhum processo encontrado",
+        "nao ha processos vinculados",
+        "nenhum resultado encontrado para o cpf"
+      ]
+    },
+    {
+      "id": "tjsp_esaj",
+      "nome": "TJ-SP e-SAJ (1º grau, consulta por CPF)",
+      "tipo": "manual_captcha",
+      "url_busca": "https://esaj.tjsp.jus.br/cpopg/open.do",
+      "sentinela_limpo": "nao foi encontrado nenhum processo",
+      "sentinelas_alternativas": [
+        "nao foi encontrado nenhum processo para os parametros informados"
+      ]
+    },
+    {
+      "id": "trf3_pje",
+      "nome": "TRF-3 PJe (1º grau, consulta pública)",
+      "tipo": "manual_captcha",
+      "url_busca": "https://pje1g.trf3.jus.br/pje/ConsultaPublica/listView.seam",
+      "sentinela_limpo": "nenhum processo encontrado",
+      "sentinelas_alternativas": [
+        "nenhum processo encontrado com os parametros informados"
+      ]
+    }
+  ]
 }
