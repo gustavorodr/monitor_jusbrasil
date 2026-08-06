@@ -261,28 +261,6 @@ Ver `config.example.json` para o formato completo.
 
 ---
 
-## Três avisos honestos
-
-1. **JusBrasil é fonte secundária.** Agrega com atraso e mistura homônimos. Um
-   processo real pode aparecer lá semanas depois — ou nunca. Por isso o e-SAJ
-   (TJ-SP) e o PJe (TRF-3) foram adicionados como fontes autoritativas —
-   ainda assim, este monitor é uma rede de segurança conveniente, não
-   cobertura completa (só cobre TJ-SP/TRF-3; uma execução em outro estado ou
-   tribunal não é vigiada).
-2. **A parte frágil é o parsing, não o Cloudflare/captcha.** O regex de CNJ é
-   estável (Resolução 65 do CNJ) e o contador `totalLawsuits` do JusBrasil
-   também. Mas extrair partes/classe/assunto depende do HTML de cada site,
-   que muda sem aviso. É para isso que existem o estado INCONCLUSIVO e os
-   snapshots: quando quebrar, você é avisado e tem o HTML para corrigir — em
-   vez de descobrir meses depois.
-3. **As sentinelas de e-SAJ/PJe em `config.json` são estimativas.** Foram
-   escritas a partir de pesquisa, não de uma captura ao vivo (a busca por CPF
-   nesses portais exige reCAPTCHA, então não dava pra confirmar a frase exata
-   de "nenhum processo encontrado" sem rodar o fluxo manual uma vez). Depois
-   do primeiro `--checar-tribunais` real, confira o snapshot salvo em
-   `snapshots/tjsp_esaj/`/`snapshots/trf3_pje/` contra a `sentinela_limpo`
-   configurada e ajuste se divergir.
-
 Sem arms race anti-bot: Chromium headless normal, user-agent realista, 1
 requisição por vez. Se o Cloudflare/reCAPTCHA endurecer, o monitor prefere
 avisar que ficou **cego** (INCONCLUSIVO) a tentar burlar.
