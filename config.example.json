@@ -25,9 +25,10 @@
       "tipo": "manual_captcha",
       "url_busca": "https://esaj.tjsp.jus.br/cpopg/open.do",
       "manual_timeout_min": 15,
-      "sentinela_limpo": "nao foi encontrado nenhum processo",
+      "sentinela_limpo": "nao existem informacoes disponiveis para os parametros informados",
       "sentinelas_alternativas": [
-        "nao foi encontrado nenhum processo para os parametros informados"
+        "nao existem informacoes disponiveis",
+        "nao foi encontrado nenhum processo"
       ]
     },
     {
