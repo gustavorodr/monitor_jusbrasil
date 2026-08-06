@@ -179,20 +179,24 @@ systemctl --user start monitor-jusbrasil.service       # rodar agora, manualment
 ```
 - Roda **ao ligar a máquina** (`OnStartupSec=2min`) e todo dia às **12h** e **18h**.
 - `Persistent=true`: se a máquina estava desligada no horário, roda ao voltar.
-- `RandomizedDelaySec=300`: folga de até 5 min para não bater no segundo exato.
+- `RandomizedDelaySec=0`: dispara no horário exato (12:00:00), pra o timer dos
+  tribunais engatar logo em seguida (ver abaixo).
 
 **`monitor-tribunais.timer`** — fontes `manual_captcha` (`--checar-tribunais`):
 ```bash
 systemctl --user list-timers monitor-tribunais.timer
 systemctl --user start monitor-tribunais.service       # rodar agora, manualmente
 ```
-- Roda **1x por dia às 12h15** — 15min depois do JusBrasil, dando tempo dele
-  terminar (é headless e rápido) antes de abrir o navegador visível.
+- Agendado **no mesmo horário do JusBrasil (12h00)**, mas roda **logo depois
+  que ele termina**, não junto: o serviço tem `After=monitor-jusbrasil.service`
+  e o JusBrasil é `Type=oneshot`, então o systemd só abre o navegador dos
+  tribunais quando a checagem headless do JusBrasil acaba (ela é rápida). Sem
+  espera fixa de X minutos.
 - Abre o navegador e fica esperando (até `manual_timeout_min` por fonte) —
   dá pra deixar rodando e resolver o captcha quando puder (ex.: no almoço).
   Se estourar o tempo sem resultado, pula essa fonte sem notificar e segue
   pra próxima.
-- `RandomizedDelaySec=120`, `Persistent=true` (mesma lógica do outro timer).
+- Só ao **meio-dia** (não às 18h). `Persistent=true`, `RandomizedDelaySec=0`.
 
 `loginctl enable-linger` já foi habilitado (o gerenciador --user sobe no boot),
 válido pros dois timers.
