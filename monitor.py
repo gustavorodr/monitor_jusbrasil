@@ -278,11 +278,16 @@ def classificar(html, config):
     texto = strip_tags(html)
     n_texto = normalizar(texto)
 
-    # 1) DETECCAO POSITIVA de processos: regex CNJ no DOM inteiro.
+    # 1) DETECCAO POSITIVA de processos: regex CNJ no TEXTO VISIVEL (sem
+    # script/style). Varrer o html cru pega falso-positivo: paginas JSF/PJe
+    # embutem mascara de input tipo "9999999-99.9999.9.99.9999" (formato
+    # exemplo, nao um processo real) dentro de <script>, que bate na cara
+    # com o regex de CNJ. strip_tags() ja remove script/style antes de gerar
+    # 'texto', entao usamos ele aqui em vez do html bruto.
     cnj_re = re.compile(config["cnj_regex"])
     achados = []
     vistos_local = set()
-    for m in cnj_re.finditer(html):
+    for m in cnj_re.finditer(texto):
         cnj = m.group(0)
         if cnj in vistos_local:
             continue
