@@ -476,7 +476,9 @@ def buscar_html(config):
 # --------------------------------------------------------------------------
 def _aguardar_resultado_manual(page, cfg_fonte, timeout_min):
     """Poll ate achar CNJ/sentinela na pagina, ou o tempo limite estourar.
-    Retorna (html, pulado). pulado=True tanto por timeout quanto por 'p'."""
+    Retorna (html, pulado). pulado=True tanto por timeout quanto por 'p'.
+    Terminal interativo: Enter sozinho forca uma verificacao imediata (sem
+    esperar o proximo ciclo de poll); 'p'/'pular' + Enter pula na hora."""
     import select
 
     limite_seg = timeout_min * 60
@@ -484,18 +486,32 @@ def _aguardar_resultado_manual(page, cfg_fonte, timeout_min):
     decorrido = 0
     sentinelas = [cfg_fonte["sentinela_limpo"]] + cfg_fonte.get("sentinelas_alternativas", [])
 
+    def resultado_pronto(html):
+        # Varre o texto sem script/style (strip_tags) — html cru tem
+        # falso-positivo com mascaras de input tipo jQuery no PJe/e-SAJ
+        # (ver classificar()).
+        texto_pagina = strip_tags(html)
+        tem_cnj = re.search(cfg_fonte["cnj_regex"], texto_pagina)
+        tem_sentinela = any(normalizar(s) in normalizar(texto_pagina) for s in sentinelas)
+        return tem_cnj or tem_sentinela
+
     while decorrido < limite_seg:
         html = page.content()
-        tem_cnj = re.search(cfg_fonte["cnj_regex"], html)
-        n_texto = normalizar(strip_tags(html))
-        tem_sentinela = any(normalizar(s) in n_texto for s in sentinelas)
-        if tem_cnj or tem_sentinela:
+        if resultado_pronto(html):
             return html, False
 
         if sys.stdin.isatty():
             pronto, _, _ = select.select([sys.stdin], [], [], intervalo_seg)
-            if pronto and sys.stdin.readline().strip().lower() in ("p", "pular"):
-                return page.content(), True
+            if pronto:
+                linha = sys.stdin.readline().strip().lower()
+                if linha in ("p", "pular"):
+                    return page.content(), True
+                # Enter (ou qualquer outra tecla): verifica agora, na hora
+                html = page.content()
+                if resultado_pronto(html):
+                    return html, False
+                print("Ainda sem resultado na tela. Continuando a aguardar "
+                      "('p' + Enter pula)...")
         else:
             page.wait_for_timeout(intervalo_seg * 1000)
         decorrido += intervalo_seg
@@ -511,8 +527,8 @@ def checar_fonte_manual(fonte, config, st):
     print(f"\n=== {fonte['nome']} ===")
     print(f"Abrindo navegador em: {fonte['url_busca']}")
     print(f"Preencha o CPF, resolva o captcha e busque. Aguardando ate "
-          f"{timeout_min} min pelo resultado "
-          "(terminal interativo: digite 'p' + Enter a qualquer momento pra pular).")
+          f"{timeout_min} min pelo resultado (o script ja detecta sozinho, "
+          "mas no terminal: Enter verifica agora, 'p' + Enter pula).")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
