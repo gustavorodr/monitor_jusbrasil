@@ -486,17 +486,32 @@ def _aguardar_resultado_manual(page, cfg_fonte, timeout_min):
     decorrido = 0
     sentinelas = [cfg_fonte["sentinela_limpo"]] + cfg_fonte.get("sentinelas_alternativas", [])
 
+    def conteudo_seguro():
+        # Ao clicar "Consultar" a pagina navega; page.content() chamado
+        # nesse instante lanca "page is navigating and changing the content".
+        # Tratamos como "ainda nao pronto" e tentamos no proximo ciclo, em
+        # vez de derrubar o script inteiro.
+        try:
+            return page.content()
+        except Exception:
+            return None
+
     def resultado_pronto(html):
         # Varre o texto sem script/style (strip_tags) — html cru tem
         # falso-positivo com mascaras de input tipo jQuery no PJe/e-SAJ
         # (ver classificar()).
+        if not html:
+            return False
         texto_pagina = strip_tags(html)
         tem_cnj = re.search(cfg_fonte["cnj_regex"], texto_pagina)
         tem_sentinela = any(normalizar(s) in normalizar(texto_pagina) for s in sentinelas)
         return tem_cnj or tem_sentinela
 
+    ultimo_html = ""
     while decorrido < limite_seg:
-        html = page.content()
+        html = conteudo_seguro()
+        if html:
+            ultimo_html = html
         if resultado_pronto(html):
             return html, False
 
@@ -505,9 +520,11 @@ def _aguardar_resultado_manual(page, cfg_fonte, timeout_min):
             if pronto:
                 linha = sys.stdin.readline().strip().lower()
                 if linha in ("p", "pular"):
-                    return page.content(), True
+                    return conteudo_seguro() or ultimo_html, True
                 # Enter (ou qualquer outra tecla): verifica agora, na hora
-                html = page.content()
+                html = conteudo_seguro()
+                if html:
+                    ultimo_html = html
                 if resultado_pronto(html):
                     return html, False
                 print("Ainda sem resultado na tela. Continuando a aguardar "
@@ -516,7 +533,7 @@ def _aguardar_resultado_manual(page, cfg_fonte, timeout_min):
             page.wait_for_timeout(intervalo_seg * 1000)
         decorrido += intervalo_seg
 
-    return page.content(), True
+    return (conteudo_seguro() or ultimo_html), True
 
 
 def checar_fonte_manual(fonte, config, st):
